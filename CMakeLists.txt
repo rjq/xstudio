@@ -16,7 +16,20 @@ project(${XSTUDIO_GLOBAL_NAME} VERSION ${XSTUDIO_GLOBAL_VERSION} LANGUAGES CXX)
 # Pre-create the target so Qt's FindWrapOpenGL early-returns and never hits the
 # broken AGL block. Can be removed once the minimum supported Qt is >= 6.9.
 if(APPLE AND NOT TARGET WrapOpenGL::WrapOpenGL)
+    # vcpkg's toolchain sets CMAKE_FIND_FRAMEWORK to LAST so vcpkg-built
+    # libraries take priority over system frameworks. For OpenGL that's wrong
+    # on macOS: if XQuartz is installed, find_package(OpenGL) will resolve to
+    # XQuartz's X11/GLX libGL.dylib instead of Apple's native OpenGL.framework.
+    # Qt creates a native Cocoa/CGL context (not an X11/GLX one), so linking
+    # against XQuartz's GL means every OpenGL call that depends on the current
+    # context (shader compile/link, glGetString, etc) silently no-ops instead
+    # of erroring - it looks like shader link failures with empty info logs.
+    # Force framework-first resolution here, then restore vcpkg's preference.
+    set(_xstudio_saved_find_framework ${CMAKE_FIND_FRAMEWORK})
+    set(CMAKE_FIND_FRAMEWORK FIRST)
     find_package(OpenGL REQUIRED)
+    set(CMAKE_FIND_FRAMEWORK ${_xstudio_saved_find_framework})
+    unset(_xstudio_saved_find_framework)
     add_library(WrapOpenGL::WrapOpenGL INTERFACE IMPORTED)
     target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE OpenGL::GL)
 endif()
@@ -114,7 +127,13 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 set(REPROC_INSTALL OFF)
 set(REPROC++ ON)
 
-set(OpenGL_GL_PREFERENCE GLVND)
+if(NOT APPLE)
+    # GLVND vs LEGACY is a Linux-only distinction between the vendor-neutral
+    # dispatch library and vendor-specific libGL - it has no meaning on macOS,
+    # where FindOpenGL.cmake always resolves the native OpenGL.framework (see
+    # the CMAKE_FIND_FRAMEWORK handling above for the Apple-specific caveat).
+    set(OpenGL_GL_PREFERENCE GLVND)
+endif()
 
 if (USE_SANITIZER STREQUAL "Address")
     if(MSVC)
